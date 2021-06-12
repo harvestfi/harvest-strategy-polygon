@@ -18,20 +18,20 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
   using SafeMath for uint256;
   using SafeERC20 for IERC20;
 
-  address public constant uniswapRouterV2 = address(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);
-  address public constant sushiswapRouterV2 = address(0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F);
+  address public constant quickswapRouterV2 = address(0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff);
+  address public constant sushiswapRouterV2 = address(0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506);
 
   // additional storage slots (on top of BaseUpgradeableStrategy ones) are defined here
   bytes32 internal constant _POOLID_SLOT = 0x3fd729bfa2e28b7806b03a6e014729f59477b530f995be4d51defc9dad94810b;
-  bytes32 internal constant _USE_UNI_SLOT = 0x1132c1de5e5b6f1c4c7726265ddcf1f4ae2a9ecf258a0002de174248ecbf2c7a;
+  bytes32 internal constant _USE_QUICK_SLOT = 0x1132c1de5e5b6f1c4c7726265ddcf1f4ae2a9ecf258a0002de174248ecbf2c7a;
   bytes32 internal constant _IS_LP_ASSET_SLOT = 0xc2f3dabf55b1bdda20d5cf5fcba9ba765dfc7c9dbaf28674ce46d43d60d58768;
 
   // this would be reset on each upgrade
-  mapping (address => address[]) public uniswapRoutes;
+  mapping (address => address[]) public swapRoutes;
 
   constructor() public BaseUpgradeableStrategy() {
     assert(_POOLID_SLOT == bytes32(uint256(keccak256("eip1967.strategyStorage.poolId")) - 1));
-    assert(_USE_UNI_SLOT == bytes32(uint256(keccak256("eip1967.strategyStorage.useUni")) - 1));
+    assert(_USE_QUICK_SLOT == bytes32(uint256(keccak256("eip1967.strategyStorage.useUni")) - 1));
     assert(_IS_LP_ASSET_SLOT == bytes32(uint256(keccak256("eip1967.strategyStorage.isLpAsset")) - 1));
   }
 
@@ -65,17 +65,17 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
     _setPoolId(_poolID);
 
     if (_isLpAsset) {
-      address uniLPComponentToken0 = IUniswapV2Pair(underlying()).token0();
-      address uniLPComponentToken1 = IUniswapV2Pair(underlying()).token1();
+      address LPComponentToken0 = IUniswapV2Pair(underlying()).token0();
+      address LPComponentToken1 = IUniswapV2Pair(underlying()).token1();
 
       // these would be required to be initialized separately by governance
-      uniswapRoutes[uniLPComponentToken0] = new address[](0);
-      uniswapRoutes[uniLPComponentToken1] = new address[](0);
+      swapRoutes[LPComponentToken0] = new address[](0);
+      swapRoutes[LPComponentToken1] = new address[](0);
     } else {
-      uniswapRoutes[underlying()] = new address[](0);
+      swapRoutes[underlying()] = new address[](0);
     }
 
-    setBoolean(_USE_UNI_SLOT, _useUni);
+    setBoolean(_USE_QUICK_SLOT, _useUni);
     setBoolean(_IS_LP_ASSET_SLOT, _isLpAsset);
   }
 
@@ -131,7 +131,7 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
   }
 
   function setLiquidationPath(address _token, address [] memory _route) public onlyGovernance {
-    uniswapRoutes[_token] = _route;
+    swapRoutes[_token] = _route;
   }
 
   // We assume that all the tradings can be done on Uniswap
@@ -152,7 +152,7 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
 
     address routerV2;
     if(useUni()) {
-      routerV2 = uniswapRouterV2;
+      routerV2 = quickswapRouterV2;
     } else {
       routerV2 = sushiswapRouterV2;
     }
@@ -165,24 +165,24 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
     uint256 amountOutMin = 1;
 
     if (isLpAsset()) {
-      address uniLPComponentToken0 = IUniswapV2Pair(underlying()).token0();
-      address uniLPComponentToken1 = IUniswapV2Pair(underlying()).token1();
+      address LPComponentToken0 = IUniswapV2Pair(underlying()).token0();
+      address LPComponentToken1 = IUniswapV2Pair(underlying()).token1();
 
       uint256 toToken0 = remainingRewardBalance.div(2);
       uint256 toToken1 = remainingRewardBalance.sub(toToken0);
 
       uint256 token0Amount;
 
-      if (uniswapRoutes[uniLPComponentToken0].length > 1) {
+      if (swapRoutes[LPComponentToken0].length > 1) {
         // if we need to liquidate the token0
         IUniswapV2Router02(routerV2).swapExactTokensForTokens(
           toToken0,
           amountOutMin,
-          uniswapRoutes[uniLPComponentToken0],
+          swapRoutes[LPComponentToken0],
           address(this),
           block.timestamp
         );
-        token0Amount = IERC20(uniLPComponentToken0).balanceOf(address(this));
+        token0Amount = IERC20(LPComponentToken0).balanceOf(address(this));
       } else {
         // otherwise we assme token0 is the reward token itself
         token0Amount = toToken0;
@@ -190,32 +190,32 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
 
       uint256 token1Amount;
 
-      if (uniswapRoutes[uniLPComponentToken1].length > 1) {
+      if (swapRoutes[LPComponentToken1].length > 1) {
         // sell reward token to token1
         IUniswapV2Router02(routerV2).swapExactTokensForTokens(
           toToken1,
           amountOutMin,
-          uniswapRoutes[uniLPComponentToken1],
+          swapRoutes[LPComponentToken1],
           address(this),
           block.timestamp
         );
-        token1Amount = IERC20(uniLPComponentToken1).balanceOf(address(this));
+        token1Amount = IERC20(LPComponentToken1).balanceOf(address(this));
       } else {
         token1Amount = toToken1;
       }
 
       // provide token1 and token2 to SUSHI
-      IERC20(uniLPComponentToken0).safeApprove(routerV2, 0);
-      IERC20(uniLPComponentToken0).safeApprove(routerV2, token0Amount);
+      IERC20(LPComponentToken0).safeApprove(routerV2, 0);
+      IERC20(LPComponentToken0).safeApprove(routerV2, token0Amount);
 
-      IERC20(uniLPComponentToken1).safeApprove(routerV2, 0);
-      IERC20(uniLPComponentToken1).safeApprove(routerV2, token1Amount);
+      IERC20(LPComponentToken1).safeApprove(routerV2, 0);
+      IERC20(LPComponentToken1).safeApprove(routerV2, token1Amount);
 
       // we provide liquidity to sushi
       uint256 liquidity;
       (,,liquidity) = IUniswapV2Router02(routerV2).addLiquidity(
-        uniLPComponentToken0,
-        uniLPComponentToken1,
+        LPComponentToken0,
+        LPComponentToken1,
         token0Amount,
         token1Amount,
         1,  // we are willing to take whatever the pair gives us
@@ -227,7 +227,7 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
       IUniswapV2Router02(routerV2).swapExactTokensForTokens(
         remainingRewardBalance,
         amountOutMin,
-        uniswapRoutes[underlying()],
+        swapRoutes[underlying()],
         address(this),
         block.timestamp
       );
@@ -315,7 +315,7 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
   }
 
   /**
-  * Can completely disable claiming UNI rewards and selling. Good for emergency withdraw in the
+  * Can completely disable claiming rewards and selling. Good for emergency withdraw in the
   * simplest possible way.
   */
   function setSell(bool s) public onlyGovernance {
@@ -339,11 +339,11 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
   }
 
   function setUseUni(bool _value) public onlyGovernance {
-    setBoolean(_USE_UNI_SLOT, _value);
+    setBoolean(_USE_QUICK_SLOT, _value);
   }
 
   function useUni() public view returns (bool) {
-    return getBoolean(_USE_UNI_SLOT);
+    return getBoolean(_USE_QUICK_SLOT);
   }
 
   function isLpAsset() public view returns (bool) {
@@ -355,10 +355,10 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
     // reset the liquidation paths
     // they need to be re-set manually
     if (isLpAsset()) {
-      uniswapRoutes[IUniswapV2Pair(underlying()).token0()] = new address[](0);
-      uniswapRoutes[IUniswapV2Pair(underlying()).token1()] = new address[](0);
+      swapRoutes[IUniswapV2Pair(underlying()).token0()] = new address[](0);
+      swapRoutes[IUniswapV2Pair(underlying()).token1()] = new address[](0);
     } else {
-      uniswapRoutes[underlying()] = new address[](0);
+      swapRoutes[underlying()] = new address[](0);
     }
   }
 }
