@@ -95,6 +95,8 @@ When ready, open a pull request with the following information:
 
 5. A description of **potential value** for Harvest: why should your strategy be live? High APYs, decent pool sizes, longevity of rewards, well-secured protocols, high-potential collaborations, etc.
 
+A more extensive checklist for assessing protocols and farming opportunities can be found [here](https://www.notion.so/harvestfinance/Farm-ops-check-list-7cd2e0d9da364252ac465cb8a176f0e0)
+
 ## Deployment
 
 If your pull request is merged and given a green light for deployment, the Harvest team will take care of on-chain deployment.
