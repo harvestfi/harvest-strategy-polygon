@@ -1,5 +1,4 @@
 //SPDX-License-Identifier: Unlicense
-
 pragma solidity 0.6.12;
 
 import "@openzeppelin/contracts/math/Math.sol";
@@ -7,13 +6,11 @@ import "@openzeppelin/contracts/math/SafeMath.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
-import "../interface/IVault.sol";
-import "../upgradability/BaseUpgradeableStrategy.sol";
-import "./interfaces/IMasterChef.sol";
-import "@uniswap/v2-periphery/contracts/interfaces/IWETH.sol";
+import "../../base/interface/IVault.sol";
+import "../../base/upgradability/BaseUpgradeableStrategy.sol";
+import "./interfaces/ILiquidityMining.sol";
 
-
-contract MasterChefStrategy is BaseUpgradeableStrategy {
+contract ComplifiStrategy is BaseUpgradeableStrategy {
 
   using SafeMath for uint256;
   using SafeERC20 for IERC20;
@@ -52,7 +49,7 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
       _vault,
       _rewardPool,
       _rewardToken,
-      80, // profit sharing numerator
+      300, // profit sharing numerator
       1000, // profit sharing denominator
       true, // sell
       1e18, // sell floor
@@ -60,7 +57,7 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
     );
 
     address _lpt;
-    (_lpt,,,) = IMasterChef(rewardPool()).poolInfo(_poolID);
+    (_lpt,,,) = ILiquidityMining(rewardPool()).poolInfo(_poolID);
     require(_lpt == underlying(), "Pool Info does not match underlying");
     _setPoolId(_poolID);
 
@@ -84,20 +81,20 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
   }
 
   function rewardPoolBalance() internal view returns (uint256 bal) {
-      (bal,) = IMasterChef(rewardPool()).userInfo(poolId(), address(this));
+      (bal,) = ILiquidityMining(rewardPool()).userPoolInfo(poolId(), address(this));
   }
 
   function exitRewardPool() internal {
       uint256 bal = rewardPoolBalance();
       if (bal != 0) {
-          IMasterChef(rewardPool()).withdraw(poolId(), bal);
+          ILiquidityMining(rewardPool()).withdraw(poolId(), bal);
       }
   }
 
   function emergencyExitRewardPool() internal {
       uint256 bal = rewardPoolBalance();
       if (bal != 0) {
-          IMasterChef(rewardPool()).emergencyWithdraw(poolId());
+          ILiquidityMining(rewardPool()).withdrawEmergency(poolId());
       }
   }
 
@@ -109,7 +106,7 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
     uint256 entireBalance = IERC20(underlying()).balanceOf(address(this));
     IERC20(underlying()).safeApprove(rewardPool(), 0);
     IERC20(underlying()).safeApprove(rewardPool(), entireBalance);
-    IMasterChef(rewardPool()).deposit(poolId(), entireBalance);
+    ILiquidityMining(rewardPool()).deposit(poolId(), entireBalance);
   }
 
   /*
@@ -252,6 +249,7 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
     if (address(rewardPool()) != address(0)) {
       exitRewardPool();
     }
+    ILiquidityMining(rewardPool()).claim();
     _liquidateReward();
     IERC20(underlying()).safeTransfer(vault(), IERC20(underlying()).balanceOf(address(this)));
   }
@@ -269,7 +267,7 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
       // for the peace of mind (in case something gets changed in between)
       uint256 needToWithdraw = amount.sub(entireBalance);
       uint256 toWithdraw = Math.min(rewardPoolBalance(), needToWithdraw);
-      IMasterChef(rewardPool()).withdraw(poolId(), toWithdraw);
+      ILiquidityMining(rewardPool()).withdraw(poolId(), toWithdraw);
     }
 
     IERC20(underlying()).safeTransfer(vault(), amount);
@@ -309,7 +307,7 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
   *   when the investing is being paused by governance.
   */
   function doHardWork() external onlyNotPausedInvesting restricted {
-    exitRewardPool();
+    ILiquidityMining(rewardPool()).claim();
     _liquidateReward();
     investAllUnderlying();
   }
