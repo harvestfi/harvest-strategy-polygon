@@ -40,9 +40,11 @@ contract FeeRewardForwarder is Governable {
 
     routes[quick][ifarm] = [quick, ifarm];
     routes[sushi][ifarm] = [sushi, weth, wmatic, ifarm];
+    routes[wmatic][ifarm] = [wmatic, ifarm];
 
     routers[quick][ifarm] = [quickRouter];
     routers[sushi][ifarm] = [sushiRouter, quickRouter, quickRouter];
+    routers[wmatic][ifarm] = [quickRouter];
   }
 
   /*

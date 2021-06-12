@@ -22,7 +22,7 @@ contract MasterChefStrategyWithBuyback is BaseUpgradeableStrategy {
 
   // additional storage slots (on top of BaseUpgradeableStrategy ones) are defined here
   bytes32 internal constant _POOLID_SLOT = 0x3fd729bfa2e28b7806b03a6e014729f59477b530f995be4d51defc9dad94810b;
-  bytes32 internal constant _USE_QUICK_SLOT = 0x1132c1de5e5b6f1c4c7726265ddcf1f4ae2a9ecf258a0002de174248ecbf2c7a;
+  bytes32 internal constant _USE_QUICK_SLOT = 0x189f8e6d384b6a451390d61330a1995a733994439125cd881a1bdac25fe65ea2;
   bytes32 internal constant _IS_LP_ASSET_SLOT = 0xc2f3dabf55b1bdda20d5cf5fcba9ba765dfc7c9dbaf28674ce46d43d60d58768;
   bytes32 internal constant _DISTRIBUTION_POOL = 0xffff3ca4ef6be91c73d8650479019ed5238e272f1f8a0190b85eb7dae6fd4b6b;
   bytes32 internal constant _BUYBACK_RATIO = 0xec0174f2065dc3fa83d1e3b1944c6e3f68d25ad5cfc7af4559379936de9ba927;
@@ -32,7 +32,7 @@ contract MasterChefStrategyWithBuyback is BaseUpgradeableStrategy {
 
   constructor() public BaseUpgradeableStrategy() {
     assert(_POOLID_SLOT == bytes32(uint256(keccak256("eip1967.strategyStorage.poolId")) - 1));
-    assert(_USE_QUICK_SLOT == bytes32(uint256(keccak256("eip1967.strategyStorage.useUni")) - 1));
+    assert(_USE_QUICK_SLOT == bytes32(uint256(keccak256("eip1967.strategyStorage.useQuick")) - 1));
     assert(_IS_LP_ASSET_SLOT == bytes32(uint256(keccak256("eip1967.strategyStorage.isLpAsset")) - 1));
     assert(_DISTRIBUTION_POOL == bytes32(uint256(keccak256("eip1967.strategyStorage.distributionPool")) - 1));
     assert(_BUYBACK_RATIO == bytes32(uint256(keccak256("eip1967.strategyStorage.buybackRatio")) - 1));
@@ -46,7 +46,7 @@ contract MasterChefStrategyWithBuyback is BaseUpgradeableStrategy {
     address _rewardToken,
     uint256 _poolID,
     bool _isLpAsset,
-    bool _useUni,
+    bool _useQuick,
     address _distributionPool,
     uint256 _buybackRatio
   ) public initializer {
@@ -83,7 +83,7 @@ contract MasterChefStrategyWithBuyback is BaseUpgradeableStrategy {
       swapRoutes[underlying()] = new address[](0);
     }
 
-    setBoolean(_USE_QUICK_SLOT, _useUni);
+    setBoolean(_USE_QUICK_SLOT, _useQuick);
     setBoolean(_IS_LP_ASSET_SLOT, _isLpAsset);
 
     setAddress(_DISTRIBUTION_POOL, _distributionPool);
@@ -171,7 +171,7 @@ contract MasterChefStrategyWithBuyback is BaseUpgradeableStrategy {
     }
 
     address routerV2;
-    if(useUni()) {
+    if(useQuick()) {
       routerV2 = quickswapRouterV2;
     } else {
       routerV2 = sushiswapRouterV2;
@@ -363,11 +363,11 @@ contract MasterChefStrategyWithBuyback is BaseUpgradeableStrategy {
     return getUint256(_POOLID_SLOT);
   }
 
-  function setUseUni(bool _value) public onlyGovernance {
+  function setUseQuick(bool _value) public onlyGovernance {
     setBoolean(_USE_QUICK_SLOT, _value);
   }
 
-  function useUni() public view returns (bool) {
+  function useQuick() public view returns (bool) {
     return getBoolean(_USE_QUICK_SLOT);
   }
 

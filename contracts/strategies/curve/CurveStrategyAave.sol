@@ -1,5 +1,4 @@
 //SPDX-License-Identifier: Unlicense
-
 pragma solidity 0.6.12;
 
 import "@openzeppelin/contracts/math/Math.sol";
@@ -7,13 +6,12 @@ import "@openzeppelin/contracts/math/SafeMath.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
-import "../interface/IVault.sol";
-import "../upgradability/BaseUpgradeableStrategy.sol";
-import "./interfaces/IMasterChef.sol";
-import "@uniswap/v2-periphery/contracts/interfaces/IWETH.sol";
+import "../../base/interface/IVault.sol";
+import "../../base/upgradability/BaseUpgradeableStrategy.sol";
+import "../../base/interface/curve/ICurveDeposit_3token_underlying.sol";
+import "../../base/interface/curve/Gauge.sol";
 
-
-contract MasterChefStrategy is BaseUpgradeableStrategy {
+contract CurveStrategyAave is BaseUpgradeableStrategy {
 
   using SafeMath for uint256;
   using SafeERC20 for IERC20;
@@ -22,28 +20,30 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
   address public constant sushiswapRouterV2 = address(0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506);
 
   // additional storage slots (on top of BaseUpgradeableStrategy ones) are defined here
-  bytes32 internal constant _POOLID_SLOT = 0x3fd729bfa2e28b7806b03a6e014729f59477b530f995be4d51defc9dad94810b;
   bytes32 internal constant _USE_QUICK_SLOT = 0x189f8e6d384b6a451390d61330a1995a733994439125cd881a1bdac25fe65ea2;
-  bytes32 internal constant _IS_LP_ASSET_SLOT = 0xc2f3dabf55b1bdda20d5cf5fcba9ba765dfc7c9dbaf28674ce46d43d60d58768;
+  bytes32 internal constant _DEPOSIT_ARRAY_POSITION_SLOT = 0xb7c50ef998211fff3420379d0bf5b8dfb0cee909d1b7d9e517f311c104675b09;
+  bytes32 internal constant _CURVE_DEPOSIT_SLOT = 0xb306bb7adebd5a22f5e4cdf1efa00bc5f62d4f5554ef9d62c1b16327cd3ab5f9;
+  bytes32 internal constant _DEPOSIT_TOKEN_SLOT = 0x219270253dbc530471c88a9e7c321b36afda219583431e7b6c386d2d46e70c86;
 
-  // this would be reset on each upgrade
-  mapping (address => address[]) public swapRoutes;
+  address[] public reward2deposit;
 
   constructor() public BaseUpgradeableStrategy() {
-    assert(_POOLID_SLOT == bytes32(uint256(keccak256("eip1967.strategyStorage.poolId")) - 1));
     assert(_USE_QUICK_SLOT == bytes32(uint256(keccak256("eip1967.strategyStorage.useQuick")) - 1));
-    assert(_IS_LP_ASSET_SLOT == bytes32(uint256(keccak256("eip1967.strategyStorage.isLpAsset")) - 1));
+    assert(_DEPOSIT_ARRAY_POSITION_SLOT == bytes32(uint256(keccak256("eip1967.strategyStorage.depositArrayPosition")) - 1));
+    assert(_CURVE_DEPOSIT_SLOT == bytes32(uint256(keccak256("eip1967.strategyStorage.curveDeposit")) - 1));
+    assert(_DEPOSIT_TOKEN_SLOT == bytes32(uint256(keccak256("eip1967.strategyStorage.depositToken")) - 1));
   }
 
-  function initializeStrategy(
+  function initializeBaseStrategy(
     address _storage,
     address _underlying,
     address _vault,
     address _rewardPool,
     address _rewardToken,
-    uint256 _poolID,
-    bool _isLpAsset,
-    bool _useQuick
+    bool    _useQuick,
+    uint256 _depositArrayPosition,
+    address _curveDeposit,
+    address _depositToken
   ) public initializer {
 
     BaseUpgradeableStrategy.initialize(
@@ -55,28 +55,15 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
       80, // profit sharing numerator
       1000, // profit sharing denominator
       true, // sell
-      1e18, // sell floor
+      0, // sell floor
       12 hours // implementation change delay
     );
-
-    address _lpt;
-    (_lpt,,,) = IMasterChef(rewardPool()).poolInfo(_poolID);
-    require(_lpt == underlying(), "Pool Info does not match underlying");
-    _setPoolId(_poolID);
-
-    if (_isLpAsset) {
-      address LPComponentToken0 = IUniswapV2Pair(underlying()).token0();
-      address LPComponentToken1 = IUniswapV2Pair(underlying()).token1();
-
-      // these would be required to be initialized separately by governance
-      swapRoutes[LPComponentToken0] = new address[](0);
-      swapRoutes[LPComponentToken1] = new address[](0);
-    } else {
-      swapRoutes[underlying()] = new address[](0);
-    }
-
+    require(_depositArrayPosition < 3, "Deposit array position out of bounds");
+    _setDepositArrayPosition(_depositArrayPosition);
+    _setCurveDeposit(_curveDeposit);
+    _setDepositToken(_depositToken);
     setBoolean(_USE_QUICK_SLOT, _useQuick);
-    setBoolean(_IS_LP_ASSET_SLOT, _isLpAsset);
+    reward2deposit = new address[](0);
   }
 
   function depositArbCheck() public pure returns(bool) {
@@ -84,21 +71,20 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
   }
 
   function rewardPoolBalance() internal view returns (uint256 bal) {
-      (bal,) = IMasterChef(rewardPool()).userInfo(poolId(), address(this));
+      bal = Gauge(rewardPool()).balanceOf(address(this));
   }
 
-  function exitRewardPool() internal {
-      uint256 bal = rewardPoolBalance();
-      if (bal != 0) {
-          IMasterChef(rewardPool()).withdraw(poolId(), bal);
-      }
+  function withdrawUnderlyingFromPool(uint256 amount) internal {
+    Gauge(rewardPool()).withdraw(
+      Math.min(Gauge(rewardPool()).balanceOf(address(this)), amount)
+    );
   }
 
   function emergencyExitRewardPool() internal {
-      uint256 bal = rewardPoolBalance();
-      if (bal != 0) {
-          IMasterChef(rewardPool()).emergencyWithdraw(poolId());
-      }
+    uint256 stakedBalance = rewardPoolBalance();
+    if (stakedBalance != 0) {
+        withdrawUnderlyingFromPool(stakedBalance);
+    }
   }
 
   function unsalvagableTokens(address token) public view returns (bool) {
@@ -109,7 +95,7 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
     uint256 entireBalance = IERC20(underlying()).balanceOf(address(this));
     IERC20(underlying()).safeApprove(rewardPool(), 0);
     IERC20(underlying()).safeApprove(rewardPool(), entireBalance);
-    IMasterChef(rewardPool()).deposit(poolId(), entireBalance);
+    Gauge(rewardPool()).deposit(entireBalance);
   }
 
   /*
@@ -125,16 +111,16 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
   /*
   *   Resumes the ability to invest into the underlying reward pools
   */
-
   function continueInvesting() public onlyGovernance {
     _setPausedInvesting(false);
   }
 
-  function setLiquidationPath(address _token, address [] memory _route) public onlyGovernance {
-    swapRoutes[_token] = _route;
+  function setLiquidationPath(address [] memory _route) public onlyGovernance {
+    require(_route[0] == rewardToken(), "Path should start with rewardToken");
+    require(_route[_route.length-1] == depositToken(), "Path should end with depositToken");
+    reward2deposit = _route;
   }
 
-  // We assume that all the tradings can be done on Uniswap
   function _liquidateReward() internal {
     uint256 rewardBalance = IERC20(rewardToken()).balanceOf(address(this));
     if (!sell() || rewardBalance < sellFloor()) {
@@ -156,7 +142,6 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
     } else {
       routerV2 = sushiswapRouterV2;
     }
-
     // allow Uniswap to sell our reward
     IERC20(rewardToken()).safeApprove(routerV2, 0);
     IERC20(rewardToken()).safeApprove(routerV2, remainingRewardBalance);
@@ -164,75 +149,33 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
     // we can accept 1 as minimum because this is called only by a trusted role
     uint256 amountOutMin = 1;
 
-    if (isLpAsset()) {
-      address LPComponentToken0 = IUniswapV2Pair(underlying()).token0();
-      address LPComponentToken1 = IUniswapV2Pair(underlying()).token1();
+    IUniswapV2Router02(routerV2).swapExactTokensForTokens(
+      remainingRewardBalance,
+      amountOutMin,
+      reward2deposit,
+      address(this),
+      block.timestamp
+    );
 
-      uint256 toToken0 = remainingRewardBalance.div(2);
-      uint256 toToken1 = remainingRewardBalance.sub(toToken0);
-
-      uint256 token0Amount;
-
-      if (swapRoutes[LPComponentToken0].length > 1) {
-        // if we need to liquidate the token0
-        IUniswapV2Router02(routerV2).swapExactTokensForTokens(
-          toToken0,
-          amountOutMin,
-          swapRoutes[LPComponentToken0],
-          address(this),
-          block.timestamp
-        );
-        token0Amount = IERC20(LPComponentToken0).balanceOf(address(this));
-      } else {
-        // otherwise we assme token0 is the reward token itself
-        token0Amount = toToken0;
-      }
-
-      uint256 token1Amount;
-
-      if (swapRoutes[LPComponentToken1].length > 1) {
-        // sell reward token to token1
-        IUniswapV2Router02(routerV2).swapExactTokensForTokens(
-          toToken1,
-          amountOutMin,
-          swapRoutes[LPComponentToken1],
-          address(this),
-          block.timestamp
-        );
-        token1Amount = IERC20(LPComponentToken1).balanceOf(address(this));
-      } else {
-        token1Amount = toToken1;
-      }
-
-      // provide token1 and token2 to SUSHI
-      IERC20(LPComponentToken0).safeApprove(routerV2, 0);
-      IERC20(LPComponentToken0).safeApprove(routerV2, token0Amount);
-
-      IERC20(LPComponentToken1).safeApprove(routerV2, 0);
-      IERC20(LPComponentToken1).safeApprove(routerV2, token1Amount);
-
-      // we provide liquidity to sushi
-      uint256 liquidity;
-      (,,liquidity) = IUniswapV2Router02(routerV2).addLiquidity(
-        LPComponentToken0,
-        LPComponentToken1,
-        token0Amount,
-        token1Amount,
-        1,  // we are willing to take whatever the pair gives us
-        1,  // we are willing to take whatever the pair gives us
-        address(this),
-        block.timestamp
-      );
-    } else {
-      IUniswapV2Router02(routerV2).swapExactTokensForTokens(
-        remainingRewardBalance,
-        amountOutMin,
-        swapRoutes[underlying()],
-        address(this),
-        block.timestamp
-      );
+    uint256 tokenBalance = IERC20(depositToken()).balanceOf(address(this));
+    if (tokenBalance > 0) {
+      depositCurve();
     }
   }
+
+  function depositCurve() internal {
+    uint256 tokenBalance = IERC20(depositToken()).balanceOf(address(this));
+    IERC20(depositToken()).safeApprove(curveDeposit(), 0);
+    IERC20(depositToken()).safeApprove(curveDeposit(), tokenBalance);
+
+    uint256[3] memory depositArray;
+    depositArray[depositArrayPosition()] = tokenBalance;
+
+    // we can accept 0 as minimum, this will be called only by trusted roles
+    uint256 minimum = 0;
+    ICurveDeposit_3token_underlying(curveDeposit()).add_liquidity(depositArray, minimum, true);
+  }
+
 
   /*
   *   Stakes everything the strategy holds into the reward pool
@@ -249,9 +192,7 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
   *   Withdraws all the asset to the vault
   */
   function withdrawAllToVault() public restricted {
-    if (address(rewardPool()) != address(0)) {
-      exitRewardPool();
-    }
+    withdrawUnderlyingFromPool(rewardPoolBalance());
     _liquidateReward();
     IERC20(underlying()).safeTransfer(vault(), IERC20(underlying()).balanceOf(address(this)));
   }
@@ -269,9 +210,8 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
       // for the peace of mind (in case something gets changed in between)
       uint256 needToWithdraw = amount.sub(entireBalance);
       uint256 toWithdraw = Math.min(rewardPoolBalance(), needToWithdraw);
-      IMasterChef(rewardPool()).withdraw(poolId(), toWithdraw);
+      withdrawUnderlyingFromPool(toWithdraw);
     }
-
     IERC20(underlying()).safeTransfer(vault(), amount);
   }
 
@@ -309,13 +249,13 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
   *   when the investing is being paused by governance.
   */
   function doHardWork() external onlyNotPausedInvesting restricted {
-    exitRewardPool();
+    Gauge(rewardPool()).claim_rewards();
     _liquidateReward();
     investAllUnderlying();
   }
 
   /**
-  * Can completely disable claiming rewards and selling. Good for emergency withdraw in the
+  * Can completely disable claiming UNI rewards and selling. Good for emergency withdraw in the
   * simplest possible way.
   */
   function setSell(bool s) public onlyGovernance {
@@ -329,15 +269,6 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
     _setSellFloor(floor);
   }
 
-  // masterchef rewards pool ID
-  function _setPoolId(uint256 _value) internal {
-    setUint256(_POOLID_SLOT, _value);
-  }
-
-  function poolId() public view returns (uint256) {
-    return getUint256(_POOLID_SLOT);
-  }
-
   function setUseQuick(bool _value) public onlyGovernance {
     setBoolean(_USE_QUICK_SLOT, _value);
   }
@@ -346,19 +277,31 @@ contract MasterChefStrategy is BaseUpgradeableStrategy {
     return getBoolean(_USE_QUICK_SLOT);
   }
 
-  function isLpAsset() public view returns (bool) {
-    return getBoolean(_IS_LP_ASSET_SLOT);
+  function _setDepositArrayPosition(uint256 _value) internal {
+    setUint256(_DEPOSIT_ARRAY_POSITION_SLOT, _value);
+  }
+
+  function depositArrayPosition() public view returns (uint256) {
+    return getUint256(_DEPOSIT_ARRAY_POSITION_SLOT);
+  }
+
+  function _setCurveDeposit(address _address) internal {
+    setAddress(_CURVE_DEPOSIT_SLOT, _address);
+  }
+
+  function curveDeposit() public view returns (address) {
+    return getAddress(_CURVE_DEPOSIT_SLOT);
+  }
+
+  function _setDepositToken(address _address) internal {
+    setAddress(_DEPOSIT_TOKEN_SLOT, _address);
+  }
+
+  function depositToken() public view returns (address) {
+    return getAddress(_DEPOSIT_TOKEN_SLOT);
   }
 
   function finalizeUpgrade() external onlyGovernance {
     _finalizeUpgrade();
-    // reset the liquidation paths
-    // they need to be re-set manually
-    if (isLpAsset()) {
-      swapRoutes[IUniswapV2Pair(underlying()).token0()] = new address[](0);
-      swapRoutes[IUniswapV2Pair(underlying()).token1()] = new address[](0);
-    } else {
-      swapRoutes[underlying()] = new address[](0);
-    }
   }
 }
